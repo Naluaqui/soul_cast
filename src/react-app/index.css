@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ... suas fontes ... */
 * {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
@@ -19,6 +20,9 @@ body {
   :root {
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
+    
+    /* 3. IMPORTANTE: Cor padrão inicial (Azul) */
+    --primary-color: #2563EB; 
   }
 }
 
@@ -30,5 +34,24 @@ body {
   
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+
+  /* 4. IMPORTANTE: Regras do Modo Compacto */
+  /* Quando a classe .compact-mode estiver no body, forçamos tamanhos menores */
+  body.compact-mode {
+    font-size: 14px;
+  }
+  
+  body.compact-mode .p-6 {
+    padding: 1rem !important; /* Reduz padding de containers */
+  }
+  
+  body.compact-mode .gap-6 {
+    gap: 1rem !important; /* Reduz espaços */
+  }
+  
+  body.compact-mode button {
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.25rem !important;
   }
 }
