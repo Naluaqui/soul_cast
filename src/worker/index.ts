@@ -13,6 +13,7 @@ import {
   MOCHA_SESSION_TOKEN_COOKIE_NAME,
 } from "@getmocha/users-service/backend";
 
+
 // -----------------------------------------------------------------------
 // 2. CRIAMOS O MIDDLEWARE FALSO (O "CRACHÁ VIP")
 // -----------------------------------------------------------------------
@@ -1432,7 +1433,7 @@ function generateBoletoLine(): string {
 
 const DEMO_BANKS = ['Banco do Brasil', 'Itaú Unibanco', 'Bradesco', 'Santander', 'Caixa Econômica'];
 
-// Create payment (Pix or Boleto)
+// Create payment (Pix or Boleto) - COM WEBHOOK AUTOMÁTICO PARA O BETA
 app.post("/api/payments", authMiddleware, async (c) => {
   const currentUser = c.get("user");
   const body = await c.req.json();
@@ -1448,12 +1449,14 @@ app.post("/api/payments", authMiddleware, async (c) => {
 
   // Verify case exists
   const { results: caseExists } = await c.env.DB.prepare(
-    "SELECT id, customer_name FROM cases WHERE id = ?"
+    "SELECT id, customer_name, case_number FROM cases WHERE id = ?"
   ).bind(case_id).all();
 
   if (caseExists.length === 0) {
     return c.json({ error: "Case not found" }, 404);
   }
+
+  const caseData = caseExists[0] as any;
 
   // Generate payment data based on type
   let pixCode = null;
@@ -1467,6 +1470,7 @@ app.post("/api/payments", authMiddleware, async (c) => {
     pixCode = generatePixCode(amount, case_id);
     pixQrData = generatePixQRData(pixCode);
   } else {
+    // Simulando dados de boleto (Em produção viria do Banco/Gateway)
     boletoBarcode = generateBoletoBarcode();
     boletoLine = generateBoletoLine();
     boletoBank = DEMO_BANKS[Math.floor(Math.random() * DEMO_BANKS.length)];
@@ -1523,6 +1527,82 @@ app.post("/api/payments", authMiddleware, async (c) => {
     result.meta.last_row_id,
     JSON.stringify({ case_id, payment_type, amount })
   ).run();
+
+  // =================================================================================
+  // 🚀 WEBHOOK AUTOMÁTICO PARA O ERP BETA
+  // =================================================================================
+  // Se for BOLETO, avisa o Odoo para ele saber que geramos
+  if (payment_type === 'boleto') {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        // 1. Busca a integração ativa do tipo 'beta_erp'
+        const { results: integrations } = await c.env.DB.prepare(`
+          SELECT config, credentials FROM integrations 
+          WHERE type = 'beta_erp' AND status = 'active' 
+          LIMIT 1
+        `).all();
+
+        if (integrations.length > 0) {
+          const integration = integrations[0] as any;
+          
+          // 2. Faz o parse seguro dos JSONs do banco
+          let config = {};
+          let credentials = {};
+          
+          try { config = JSON.parse(integration.config); } catch(e) {}
+          try { credentials = JSON.parse(integration.credentials); } catch(e) {}
+
+          const baseUrl = (config as any).base_url; // Ex: http://localhost:8069
+          const apiKey = (credentials as any).api_key; // Ex: beta_sIIE...
+
+          // 3. Se tiver URL e Chave, envia!
+          if (baseUrl && apiKey) {
+            console.log(`📡 Enviando Webhook para Beta: ${baseUrl}/api/ai/echo`);
+            
+            const webhookUrl = `${baseUrl.replace(/\/$/, '')}/api/ai/echo`; // Remove barra final se tiver
+            
+            const payload = {
+              event: "boleto.generated",
+              timestamp: new Date().toISOString(),
+              data: {
+                soul_payment_id: result.meta.last_row_id,
+                case_id: case_id,
+                case_number: caseData.case_number,
+                amount: amount,
+                boleto_line: boletoLine,
+                boleto_bank: boletoBank,
+                status: "pending"
+              }
+            };
+
+            const response = await fetch(webhookUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-API-Key": apiKey
+              },
+              body: JSON.stringify(payload)
+            });
+
+            console.log(`✅ Webhook Beta Status: ${response.status}`);
+            
+            // Opcional: Logar a resposta do webhook no histórico
+            if (response.ok) {
+               await c.env.DB.prepare(`
+                INSERT INTO webhook_logs (endpoint_id, event_type, status, status_code, request_payload)
+                VALUES (0, 'boleto.generated', 'success', ?, ?)
+              `).bind(response.status, JSON.stringify(payload)).run();
+            }
+          } else {
+            console.log("⚠️ Integração Beta encontrada, mas sem base_url ou api_key configurados.");
+          }
+        }
+      } catch (err) {
+        console.error("❌ Erro ao enviar Webhook para Beta:", err);
+      }
+    })());
+  }
+  // =================================================================================
 
   return c.json({ success: true, payment: newPayment[0] });
 });
