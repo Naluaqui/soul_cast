@@ -1,6 +1,9 @@
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
+
+ENV NODE_ENV=development
+ENV WRANGLER_SEND_METRICS=false
 
 COPY package*.json ./
 RUN npm ci
@@ -10,12 +13,15 @@ COPY . .
 EXPOSE 8787
 EXPOSE 5173
 
-ENV WRANGLER_SEND_METRICS=false
-
 CMD sh -lc '\
   set -e; \
-  npx wrangler d1 execute DB --local --file=./schema.sql; \
-  npx wrangler dev --local --ip 0.0.0.0 --port 8787 & \
-  npm run dev -- --host 0.0.0.0 --port 5173 & \
+  echo "==> pwd:"; pwd; \
+  echo "==> node:"; node -v; \
+  echo "==> npm:"; npm -v; \
+  echo "==> wrangler:"; npx wrangler -v; \
+  echo "==> verificando workerd:"; ls -lah node_modules/wrangler/node_modules/@cloudflare || true; \
+  echo "==> D1 schema"; npx wrangler d1 execute DB --local --file=./schema.sql; \
+  echo "==> BACK"; npm run dev:back & \
+  echo "==> FRONT"; npm run dev:front & \
   wait \
 '

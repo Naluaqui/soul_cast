@@ -43,7 +43,9 @@
     "build": "tsc -b && vite build",
     "cf-typegen": "wrangler types",
     "check": "tsc && vite build && wrangler deploy --dry-run",
-    "dev": "vite",
+    "dev:front": "vite --host 0.0.0.0 --port 5173",
+    "dev:back": "wrangler dev --local --ip 0.0.0.0 --port 8787",
+    "dev": "npm run dev:front",
     "knip": "knip",
     "lint": "eslint ."
   }
