@@ -21,10 +21,13 @@ import CopilotSuggestions from '@/react-app/components/CopilotSuggestions';
 import PaymentModal from '@/react-app/components/PaymentModal';
 import WhatsAppModal from '@/react-app/components/WhatsAppModal';
 import { useCaseDetail, caseStatusLabels, caseStatusColors } from '@/react-app/hooks/useCases';
+import { toast } from 'react-hot-toast'; // Opcional: Se tiver instalado
 
 export default function CaseDetailPage() {
   const { id } = useParams<{ id: string }>();
+  // IMPORTANTE: Verifique se no arquivo useCases.ts o fetch está assim: fetch(`/api/cases/${id}`)
   const { caseData, loading, error, addTimelineEvent, updateStatus } = useCaseDetail(id);
+  
   const [activeTab, setActiveTab] = useState<'timeline' | 'installments' | 'notes'>('timeline');
   const [addingNote, setAddingNote] = useState(false);
   const [newNote, setNewNote] = useState('');
@@ -37,7 +40,7 @@ export default function CaseDetailPage() {
     switch (action) {
       case 'whatsapp':
         setShowWhatsAppModal(true);
-        return; // Modal handles the rest
+        return; 
       case 'open_whatsapp':
         setShowWhatsAppModal(true);
         return;
@@ -56,7 +59,7 @@ export default function CaseDetailPage() {
       case 'generate_pix':
       case 'generate_boleto':
         setShowPaymentModal(true);
-        return; // Don't show alert, modal handles feedback
+        return; 
       case 'propose_deal':
         await addTimelineEvent({ event_type: 'action', title: 'Proposta de Acordo', description: 'Proposta de acordo enviada ao cliente' });
         alert('Proposta de acordo enviada!');
@@ -156,6 +159,7 @@ export default function CaseDetailPage() {
       case 'action': return <FileText className="w-4 h-4" />;
       case 'status': return <AlertTriangle className="w-4 h-4" />;
       case 'note': return <FileText className="w-4 h-4" />;
+      case 'payment': return <CheckCircle className="w-4 h-4" />; // Ícone novo para pagamento
       default: return <Calendar className="w-4 h-4" />;
     }
   };
@@ -166,6 +170,7 @@ export default function CaseDetailPage() {
       case 'action': return 'bg-purple-100 text-purple-600';
       case 'status': return 'bg-yellow-100 text-yellow-600';
       case 'note': return 'bg-gray-100 text-gray-600';
+      case 'payment': return 'bg-emerald-100 text-emerald-600'; // Cor nova para pagamento
       default: return 'bg-gray-100 text-gray-600';
     }
   };
@@ -569,19 +574,28 @@ export default function CaseDetailPage() {
         </div>
       </div>
 
-      {/* Payment Modal */}
+      {/* Payment Modal - CORRIGIDO: SEM RELOAD */}
       <PaymentModal
         isOpen={showPaymentModal}
         onClose={() => setShowPaymentModal(false)}
         caseId={caseData.id}
         customerName={caseData.customer_name}
         totalDebt={caseData.total_debt}
-        onPaymentCreated={() => {
-          window.location.reload();
+        onPaymentCreated={async (payment) => {
+          setShowPaymentModal(false);
+          // Adiciona evento na timeline visualmente para feedback imediato
+          await addTimelineEvent({
+             event_type: 'payment',
+             title: 'Pagamento Gerado',
+             description: `Novo pagamento de R$ ${payment.amount} (${payment.payment_type})`,
+             channel: 'system'
+          });
+          // Se tiver sistema de toast/alerta:
+          // toast.success("Pagamento gerado com sucesso!");
         }}
       />
 
-      {/* WhatsApp Modal */}
+      {/* WhatsApp Modal - CORRIGIDO: SEM RELOAD */}
       <WhatsAppModal
         isOpen={showWhatsAppModal}
         onClose={() => setShowWhatsAppModal(false)}
@@ -590,8 +604,15 @@ export default function CaseDetailPage() {
         customerPhone={caseData.customer_phone}
         totalDebt={caseData.total_debt}
         daysOverdue={caseData.days_overdue}
-        onMessageSent={() => {
-          window.location.reload();
+        onMessageSent={async () => {
+          setShowWhatsAppModal(false);
+          // Adiciona evento na timeline
+          await addTimelineEvent({
+            event_type: 'contact',
+            title: 'WhatsApp Enviado',
+            description: 'Mensagem enviada via modal',
+            channel: 'whatsapp'
+          });
         }}
       />
     </div>

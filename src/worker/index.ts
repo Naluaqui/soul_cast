@@ -1433,179 +1433,100 @@ function generateBoletoLine(): string {
 
 const DEMO_BANKS = ['Banco do Brasil', 'Itaú Unibanco', 'Bradesco', 'Santander', 'Caixa Econômica'];
 
-// Create payment (Pix or Boleto) - COM WEBHOOK AUTOMÁTICO PARA O BETA
+// ============================================
+// PAYMENTS ENDPOINTS (PIX & BOLETO)
+// ============================================
+
 app.post("/api/payments", authMiddleware, async (c) => {
-  const currentUser = c.get("user");
   const body = await c.req.json();
-  const { case_id, payment_type, amount, due_date } = body;
+  const { case_id, amount, due_date, payment_type } = body;
 
-  if (!case_id || !payment_type || !amount) {
-    return c.json({ error: "case_id, payment_type, and amount are required" }, 400);
-  }
+  if (payment_type === "boleto") {
+    const integration = await c.env.DB.prepare(`
+      SELECT config, credentials FROM integrations 
+      WHERE type = 'beta_erp' AND status = 'active' LIMIT 1
+    `).first();
 
-  if (!['pix', 'boleto'].includes(payment_type)) {
-    return c.json({ error: "payment_type must be 'pix' or 'boleto'" }, 400);
-  }
+    const caseRecord = await c.env.DB.prepare(`
+      SELECT customer_name, customer_document FROM cases WHERE id = ?
+    `).bind(case_id).first();
 
-  // Verify case exists
-  const { results: caseExists } = await c.env.DB.prepare(
-    "SELECT id, customer_name, case_number FROM cases WHERE id = ?"
-  ).bind(case_id).all();
+    if (!integration || !caseRecord) {
+      return c.json({ success: false, error: "Integração ou Caso não encontrado." }, 404);
+    }
 
-  if (caseExists.length === 0) {
-    return c.json({ error: "Case not found" }, 404);
-  }
+    const config = JSON.parse(integration.config as string);
+    const creds = JSON.parse(integration.credentials as string);
+    const targetUrl = `${config.base_url.split("/api")[0]}/api/ai/echo?db=beta`;
 
-  const caseData = caseExists[0] as any;
+    try {
+      const responseBeta = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": creds.api_key },
+        body: JSON.stringify({
+          sinal: "gerar_boleto",
+          nome_completo: caseRecord.customer_name,
+          documento: caseRecord.customer_document,
+          valor_divida: amount,
+          due_date: due_date, 
+        }),
+      });
 
-  // Generate payment data based on type
-  let pixCode = null;
-  let pixQrData = null;
-  let boletoBarcode = null;
-  let boletoLine = null;
-  let boletoBank = null;
-  const externalId = `DEMO-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+      const odooText = await responseBeta.text(); 
+      console.log("[SOULCOLLECT] Odoo raw status=", responseBeta.status); 
+      console.log("[SOULCOLLECT] Odoo raw body=", odooText); 
 
-  if (payment_type === 'pix') {
-    pixCode = generatePixCode(amount, case_id);
-    pixQrData = generatePixQRData(pixCode);
-  } else {
-    // Simulando dados de boleto (Em produção viria do Banco/Gateway)
-    boletoBarcode = generateBoletoBarcode();
-    boletoLine = generateBoletoLine();
-    boletoBank = DEMO_BANKS[Math.floor(Math.random() * DEMO_BANKS.length)];
-  }
-
-  const result = await c.env.DB.prepare(`
-    INSERT INTO payments (
-      case_id, payment_type, amount, status, due_date,
-      pix_code, pix_qr_data, boleto_barcode, boleto_line, boleto_bank,
-      external_id, metadata
-    ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    case_id,
-    payment_type,
-    amount,
-    due_date || null,
-    pixCode,
-    pixQrData,
-    boletoBarcode,
-    boletoLine,
-    boletoBank,
-    externalId,
-    JSON.stringify({ demo: true, created_by: currentUser?.email })
-  ).run();
-
-  // Get the created payment
-  const { results: newPayment } = await c.env.DB.prepare(
-    "SELECT * FROM payments WHERE id = ?"
-  ).bind(result.meta.last_row_id).all();
-
-  // Add timeline entry
-  await c.env.DB.prepare(`
-    INSERT INTO case_timeline (case_id, event_type, title, description, channel, user_name, metadata)
-    VALUES (?, 'payment', ?, ?, ?, ?, ?)
-  `).bind(
-    case_id,
-    payment_type === 'pix' ? 'Pix Gerado' : 'Boleto Gerado',
-    `${payment_type === 'pix' ? 'QR Code Pix' : 'Boleto'} gerado no valor de R$ ${amount.toFixed(2)}`,
-    payment_type,
-    currentUser?.google_user_data?.name || 'Sistema',
-    JSON.stringify({ payment_id: result.meta.last_row_id, amount, external_id: externalId })
-  ).run();
-
-  // Audit log
-  const { results: appUser } = await c.env.DB.prepare(
-    "SELECT id FROM app_users WHERE mocha_user_id = ?"
-  ).bind(currentUser!.id).all();
-
-  await c.env.DB.prepare(`
-    INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)
-    VALUES (?, 'payment_created', 'payments', ?, ?)
-  `).bind(
-    (appUser[0] as any)?.id,
-    result.meta.last_row_id,
-    JSON.stringify({ case_id, payment_type, amount })
-  ).run();
-
-  // =================================================================================
-  // 🚀 WEBHOOK AUTOMÁTICO PARA O ERP BETA
-  // =================================================================================
-  // Se for BOLETO, avisa o Odoo para ele saber que geramos
-  if (payment_type === 'boleto') {
-    c.executionCtx.waitUntil((async () => {
+      let odooData: any = null; 
       try {
-        // 1. Busca a integração ativa do tipo 'beta_erp'
-        const { results: integrations } = await c.env.DB.prepare(`
-          SELECT config, credentials FROM integrations 
-          WHERE type = 'beta_erp' AND status = 'active' 
-          LIMIT 1
-        `).all();
-
-        if (integrations.length > 0) {
-          const integration = integrations[0] as any;
-          
-          // 2. Faz o parse seguro dos JSONs do banco
-          let config = {};
-          let credentials = {};
-          
-          try { config = JSON.parse(integration.config); } catch(e) {}
-          try { credentials = JSON.parse(integration.credentials); } catch(e) {}
-
-          const baseUrl = (config as any).base_url; // Ex: http://localhost:8069
-          const apiKey = (credentials as any).api_key; // Ex: beta_sIIE...
-
-          // 3. Se tiver URL e Chave, envia!
-          if (baseUrl && apiKey) {
-            console.log(`📡 Enviando Webhook para Beta: ${baseUrl}/api/ai/echo`);
-            
-            const webhookUrl = `${baseUrl.replace(/\/$/, '')}/api/ai/echo`; // Remove barra final se tiver
-            
-            const payload = {
-              event: "boleto.generated",
-              timestamp: new Date().toISOString(),
-              data: {
-                soul_payment_id: result.meta.last_row_id,
-                case_id: case_id,
-                case_number: caseData.case_number,
-                amount: amount,
-                boleto_line: boletoLine,
-                boleto_bank: boletoBank,
-                status: "pending"
-              }
-            };
-
-            const response = await fetch(webhookUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-API-Key": apiKey
-              },
-              body: JSON.stringify(payload)
-            });
-
-            console.log(`✅ Webhook Beta Status: ${response.status}`);
-            
-            // Opcional: Logar a resposta do webhook no histórico
-            if (response.ok) {
-               await c.env.DB.prepare(`
-                INSERT INTO webhook_logs (endpoint_id, event_type, status, status_code, request_payload)
-                VALUES (0, 'boleto.generated', 'success', ?, ?)
-              `).bind(response.status, JSON.stringify(payload)).run();
-            }
-          } else {
-            console.log("⚠️ Integração Beta encontrada, mas sem base_url ou api_key configurados.");
-          }
-        }
-      } catch (err) {
-        console.error("❌ Erro ao enviar Webhook para Beta:", err);
+        odooData = JSON.parse(odooText); 
+      } catch (e) {
+        return c.json(
+          {
+            success: false,
+            error: "Odoo retornou resposta não-JSON",
+            details: { status: responseBeta.status, body: odooText },
+          },
+          502
+        );
       }
-    })());
-  }
-  // =================================================================================
 
-  return c.json({ success: true, payment: newPayment[0] });
+      if (odooData.invoice_found && odooData.boleto) {
+        const b = odooData.boleto;
+
+        return c.json({
+          success: true,
+          data: {
+            valor: b.valor ?? amount,
+            vencimento: b.vencimento ?? due_date,
+            linha_digitavel: b.linha_digitavel ?? null,
+            codigo_barras: b.codigo_barras ?? null,
+            banco: "Itaú",
+            itau: {
+              id_boleto: b.id_boleto_itau ?? null,
+              nosso_numero: b.nosso_numero ?? null,
+              codigo_carteira: b.codigo_carteira ?? null,
+            },
+            invoice_id: odooData.invoice_id ?? null,
+          },
+        });
+      }
+
+      return c.json(
+        {
+          success: false,
+          error: odooData.error || "Boleto não encontrado no Odoo.",
+          details: odooData.details || null,
+        },
+        404
+      );
+    } catch (err: any) {
+      return c.json({ success: false, error: "Erro na comunicação com o Odoo." }, 503);
+    }
+  }
+
+  return c.json({ success: true, data: { valor: amount, vencimento: due_date } });
 });
+
 
 // List payments for a case
 app.get("/api/cases/:id/payments", authMiddleware, async (c) => {
@@ -3039,7 +2960,7 @@ app.put("/api/integrations/:id", authMiddleware, async (c) => {
   const prefix = (body.type || current.type) === 'sap_b1' ? 'sap_' : 'beta_';
   if (!creds.api_key || creds.api_key.length < 5) {
     creds.api_key = generateStableKey(integrationId, prefix);
-    (globalThis as any).console.log(`[REGRA] Injetando chave matemática: ${creds.api_key}`);
+    console.log(`[REGRA] Injetando chave matemática: ${creds.api_key}`);
   }
 
   // 4. Executa o UPDATE (Simplificado para garantir sucesso)
