@@ -12,6 +12,10 @@ type BoletoPayload = {
     codigo_carteira?: string;
   };
   invoice_id?: number;
+
+  pagador_nome?: string;
+  pagador_doc?: string;       
+  pagador_endereco?: string;
 };
 
 function formatBRL(v: number) {
@@ -178,7 +182,7 @@ export default function BoletoItauLayout({ data }: { data: BoletoPayload }) {
           left={
             <Field
               label="Pagador"
-              value={`(do caso) — CPF/CNPJ: (do caso)\n(endereço do caso)`}
+              value={`${data?.pagador_nome || "—"} — CPF/CNPJ: ${data?.pagador_doc || "—"}\n${data?.pagador_endereco || "—"}`}
               pre
               strong
             />

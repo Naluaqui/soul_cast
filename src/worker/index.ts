@@ -1,75 +1,52 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { getCookie, setCookie } from "hono/cookie";
-
-// -----------------------------------------------------------------------
-// 1. MODIFICAÇÃO NAS IMPORTAÇÕES (COMENTAMOS O ORIGINAL)
-// -----------------------------------------------------------------------
 import {
-  // exchangeCodeForSessionToken, <--- NÃO PRECISA MAIS
-  // getOAuthRedirectUrl,         <--- NÃO PRECISA MAIS
-  // authMiddleware,              <--- NÃO PRECISA MAIS (VAMOS CRIAR UM FALSO)
-  // deleteSession,               <--- NÃO PRECISA MAIS
+  exchangeCodeForSessionToken,
+  getOAuthRedirectUrl,
+  authMiddleware,
+  deleteSession,
   MOCHA_SESSION_TOKEN_COOKIE_NAME,
 } from "@getmocha/users-service/backend";
 
-
-// -----------------------------------------------------------------------
-// 2. CRIAMOS O MIDDLEWARE FALSO (O "CRACHÁ VIP")
-// -----------------------------------------------------------------------
-// Esse código intercepta todas as chamadas e diz: "É o Fabiano, pode passar!"
-const authMiddleware = async (c: any, next: any) => {
-  c.set("user", {
-    id: "user_bypass_local_123",
-    email: "fabianoeyes18@gmail.com", // OBRIGATÓRIO: Email do Super Admin
-    google_user_data: {
-      name: "Fabiano (Modo Local)",
-      picture: "https://ui-avatars.com/api/?name=Fabiano+Admin&background=0D8ABC&color=fff"
-    }
-  });
-  await next();
-};
-
 const app = new Hono<{ Bindings: Env }>();
 
-app.use("*", cors({
-  origin: ["http://localhost:5173", "http://localhost:3000"], // Ajuste para sua porta local
-  credentials: true,
-}));
+app.use("*", cors());
 
 // ============================================
-// AUTH ENDPOINTS (MODO BYPASS / SEM API KEY)
+// AUTH ENDPOINTS
 // ============================================
 
-// Login: Pula o Google e manda o frontend logar direto
+// Get OAuth redirect URL
 app.get("/api/oauth/google/redirect_url", async (c) => {
-  console.log("🚀 BYPASS: Pulando autenticação real (Redirecionando...)");
-  return c.json({ 
-    // Manda o front direto para a tela de 'sucesso'
-    redirectUrl: "http://localhost:5173/auth/callback?code=CODIGO_FALSO_BYPASS" 
-  }, 200);
+  const redirectUrl = await getOAuthRedirectUrl("google", {
+    apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
+    apiKey: c.env.MOCHA_USERS_SERVICE_API_KEY,
+  });
+  return c.json({ redirectUrl }, 200);
 });
 
-// Sessão: Cria um cookie falso só para o frontend ficar feliz
+// Exchange code for session token
 app.post("/api/sessions", async (c) => {
-  console.log("🚀 BYPASS: Criando sessão falsa");
-  
-  setCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME, "token_falso_desenvolvimento", {
+  const body = await c.req.json();
+
+  if (!body.code) {
+    return c.json({ error: "No authorization code provided" }, 400);
+  }
+
+  const sessionToken = await exchangeCodeForSessionToken(body.code, {
+    apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
+    apiKey: c.env.MOCHA_USERS_SERVICE_API_KEY,
+  });
+
+  setCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME, sessionToken, {
     httpOnly: true,
     path: "/",
-    sameSite: "Lax",
-    secure: false, // Importante: false para localhost
-    maxAge: 60 * 60 * 24,
+    sameSite: "none",
+    secure: true,
+    maxAge: 60 * 24 * 60 * 60,
   });
 
-  return c.json({ success: true }, 200);
-});
-
-// Logout: Apenas limpa o cookie falso
-app.get("/api/logout", async (c) => {
-  setCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME, "", {
-    httpOnly: true, path: "/", sameSite: "Lax", secure: false, maxAge: 0,
-  });
   return c.json({ success: true }, 200);
 });
 
@@ -1507,6 +1484,10 @@ app.post("/api/payments", authMiddleware, async (c) => {
               codigo_carteira: b.codigo_carteira ?? null,
             },
             invoice_id: odooData.invoice_id ?? null,
+
+            pagador_nome: caseRecord.customer_name,
+            pagador_doc: caseRecord.customer_document,
+            pagador_endereco: "Endereço não informado"
           },
         });
       }
